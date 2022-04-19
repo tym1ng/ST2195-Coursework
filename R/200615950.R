@@ -1,0 +1,336 @@
+#import library
+library(DBI)
+library(dplyr)
+library(ggplot2)
+library(ggalt)
+library(tidyr)
+
+#changing work directory
+setwd("Downloads/ST2195 Assignment/Coursework")
+
+#Creating DB file in working directory for SQL
+if (file.exists("airline.db"))
+  file.remove("airline.db")
+
+conn <-dbConnect(RSQLite::SQLite(), "airline.db") #connect to db
+
+#======= write to database ==========
+airports <-read.csv("airports.csv", header=TRUE)
+carriers <-read.csv("carriers.csv", header=TRUE)
+planes <-read.csv("plane-data.csv", header=TRUE)
+
+dbWriteTable(conn,"Airports",airports)
+dbWriteTable(conn,"Carrier",carriers)
+dbWriteTable(conn,"Planes",planes)  
+
+
+#ontime
+ontime<-data.table::rbindlist(lapply(paste0(2005:2006, ".csv"), data.table::fread))
+ontime<- na.omit(ontime)
+ontime$TotalDelay=(ontime$ArrDelay + ontime$DepDelay)
+ontime$Delay = ifelse(ontime$"TotalDelay" >15, "1","0")
+
+dbWriteTable(conn,"Ontime",ontime)  
+
+#q1a
+q1a<- dbGetQuery(conn,
+  "SELECT ontime.Deptime, AVG(ontime.TotalDelay) as AvgDelay
+  FROM ontime
+  WHERE ontime.Cancelled = 0 AND ontime.Diverted = 0
+  GROUP by ontime.Deptime
+  ORDER by AvgDelay"
+)
+
+print(paste(q1a[1,'DepTime'], "is the best time of day to fly to minimise delays, having",q1a[1,'AvgDelay'],"average delay in minutes"))
+
+#q1b
+q1b<- dbGetQuery(conn,
+  "SELECT ontime.DayOfWeek,AVG(ontime.TotalDelay) as AvgDelay
+  FROM ontime
+  WHERE ontime.Cancelled = 0 AND ontime.Diverted = 0
+  GROUP by ontime.DayofWeek
+  ORDER by AvgDelay"
+)
+
+print(paste(q1b[1,'DayOfWeek'], "is the best day of the week to fly to minimise delays, having",q1b[1,'AvgDelay'],"average delay in minutes"))
+
+
+#q1c
+q1c<- dbGetQuery(conn,
+  "SELECT ontime.Month,AVG(ontime.TotalDelay) as AvgDelay
+  FROM ontime
+  WHERE ontime.Cancelled = 0 AND ontime.Diverted = 0
+  GROUP by ontime.Month
+  ORDER by AvgDelay"
+)
+
+print(paste(q1c[1,'Month'], "is the besttime of year to fly to minimise delays, having",q1b[1,'AvgDelay'],"average delay in minutes"))
+
+#=====Answer to Question 2======
+q2<-dbGetQuery(conn,
+"SELECT planes.year As PlaneYear,ontime.Year As FlightYear, ontime.TotalDelay As TotalDelay, ontime.Delay As Delay
+  FROM planes JOIN ontime USING(tailnum)
+  WHERE ontime.Cancelled=0 AND planes.year !='' AND planes.year != '0000' AND planes.year !='None'
+  ORDER by FlightYear DESC"           
+)
+
+
+#Setting Max Print to allow more data to be mutated
+options(max.print = .Machine$integer.max)
+
+#Mutating Plane year from character to integer
+q2$PlaneYear<- as.integer(q2$PlaneYear)
+
+
+#Adding FlightYear Difference
+q2$YearDiff = (q2$FlightYear - q2$PlaneYear)
+
+
+#Plotting Bargraph for comparison for total flights and delayed flights for planes manufactured in different years
+q2%>%
+  mutate(Delay = factor(x=Delay, levels=c(0,1), labels=c("No","Yes"))) %>%
+  ggplot(aes(x=YearDiff, fill=Delay)) + 
+  geom_bar(na.rm= TRUE, position ="stack") + 
+  ggtitle("Total No. of Flights") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  scale_x_continuous(breaks=seq(-2,50,by=1)) +
+  xlab ("Year Difference")+
+  ylab ("No. of Delay")
+
+#fill plot(percentage)
+q2%>%
+  mutate(Delay = factor(x=Delay, levels=c(0,1), labels=c("No","Yes"))) %>%
+  ggplot(aes(x=YearDiff, fill=Delay)) + 
+  geom_bar(na.rm= TRUE, position ="fill") + 
+  ggtitle("Total No. of Flights") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  guides(fill=guide_legend("Delay")) +
+  scale_x_continuous(breaks=seq(-2,50,by=1)) +
+  xlab ("Year Difference")+
+  ylab ("No. of Delay")
+
+#=====Answer to Question 3=====
+q3<-dbGetQuery(conn,
+"SELECT airports.state AS State, COUNT(*) AS Count, ontime.Month, ontime.Year
+  FROM airports JOIN ontime ON ontime.origin = airports.iata
+  WHERE ontime.Cancelled = 0 AND ontime.Diverted = 0 AND State!=''
+  GROUP by State,ontime.Year,ontime.Month
+  ORDER by State"
+)
+
+#Mutating Year into character to fit the graph 
+q3$Year<- as.character(q3$Year) 
+
+
+q3%>%
+  ggplot(aes(x=Month, y=Count, group=Year)) +
+  geom_line(aes(color=Year)) + 
+  geom_point(aes(color=Year))+
+  ggtitle("Count of Flight by State") +
+  xlab ("Month")+
+  ylab ("Flight Count")+
+  geom_text(aes(label=Count),
+            colour = "black", 
+            size = 1) +
+  facet_wrap(~State, scales="free_y")+
+  scale_x_continuous(breaks=(1:12))+
+  theme(axis.text = element_text(size = 5))
+
+#=====Answer to Question 4=====
+
+library(usmap)
+
+q4sample<- sample_n(ontime,8)
+
+q4sampletailnum <- c("N351UA","N960DL","N524", "N14998", "N355CA", "N587AA", "N839UA","N516UA")
+q4a<-dbGetQuery(conn,
+  "SELECT airports.airport AS AirportOrigin,ontime.Year, ontime.Month,ontime.DayofMonth, ontime.DepTime,ontime.ArrTime,ontime.DepDelay,ontime.ArrDelay,ontime.TotalDelay,ontime.TailNum, ontime.Origin, ontime.Dest, airports.long AS OriginLong, airports.lat AS OriginLat
+  FROM airports JOIN ontime ON ontime.origin = airports.iata
+  WHERE ontime.Year=2005 AND ontime.Month=1 AND ontime.DayofMonth BETWEEN 1 AND 7 AND ontime.Cancelled = 0 AND ontime.Diverted = 0 AND ontime.TailNum IN ('N351UA','N960DL','N524', 'N14998', 'N355CA', 'N587AA', 'N839UA','N516UA')
+  ORDER by ontime.TailNum, ontime.Year,ontime.Month,ontime.DayofMonth, ontime.DepTime,ontime.ArrTime"
+)
+
+q4b<-dbGetQuery(conn,
+  "SELECT airports.airport AS AirportDest,ontime.Year, ontime.Month,ontime.DayofMonth, ontime.DepTime,ontime.ArrTime,ontime.DepDelay,ontime.ArrDelay,ontime.TotalDelay,ontime.TailNum, ontime.Origin, ontime.Dest, airports.long AS DestLong, airports.lat AS DestLat
+  FROM airports JOIN ontime ON ontime.dest = airports.iata
+  WHERE ontime.Year=2005 AND ontime.Month=1 AND ontime.DayofMonth BETWEEN 1 AND 7 AND ontime.Cancelled = 0 AND ontime.Diverted = 0 AND ontime.TailNum IN ('N351UA','N960DL','N524', 'N14998', 'N355CA', 'N587AA', 'N839UA','N516UA')
+  ORDER by ontime.TailNum, ontime.Year,ontime.Month,ontime.DayofMonth, ontime.DepTime,ontime.ArrTime"
+)
+
+q4c = merge(q4a, q4b, by = c("Year","Month","DayofMonth","DepTime","ArrTime","DepDelay","ArrDelay","TotalDelay","TailNum","Origin","Dest"),
+            all = TRUE, sort=FALSE)
+
+#Creating id columns
+q4c <-q4c %>% mutate(id = row_number())
+
+#Creating Base US Map
+usMap2 <- borders("state" ,colour="grey", fill="white")
+
+#q4a plot  
+q4c%>% 
+  mutate(TailNum = factor(x=TailNum, levels=c("N351UA","N960DL","N524", "N14998", "N355CA", "N587AA", "N839UA","N516UA"))) %>%
+  ggplot() + usMap2 +
+  geom_curve(aes(x=OriginLong, y=OriginLat, xend=DestLong, yend=DestLat, size=TotalDelay,color=TailNum),
+             curvature=0.2)+
+  scale_size_continuous(range = c(0.001, 1))+
+  geom_point(aes(x=OriginLong, y=OriginLat), 
+             size=0.02) +
+  geom_point(aes(x=DestLong, y=DestLat), 
+             size=0.02) +
+  facet_wrap(~TailNum)
+
+#q4b plot
+q4c%>% 
+  mutate(TailNum = factor(x=TailNum, levels=c("N351UA","N960DL","N524", "N14998", "N355CA", "N587AA", "N839UA","N516UA"))) %>%
+  ggplot() +
+  geom_point(aes(x=id, y= TotalDelay, color=TailNum, size = 0.5))+
+  geom_line(aes(x=id, y= TotalDelay, color=TailNum))+
+  facet_wrap(~TailNum, scales = "free") +
+  geom_text(aes(x=id, y= TotalDelay,label=AirportOrigin, size = 0.5, vjust = -1))+
+  scale_size_identity()+
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+
+
+#=====Answer to Question 5=====
+
+library(mlr3)
+library(mlr3learners)
+library(mlr3pipelines)
+library(mlr3tuning)
+
+#importing dataframe from python
+q5new <-read.csv("q5new.csv", header=TRUE) 
+
+#Assigning  n sample row value
+n <- nrow(q5new) 
+
+#Assigning number of training & test set
+train_set <- sample(n, round(0.7*n))
+test_set <- setdiff(1:n, train_set)
+
+q5new$Delay <- factor(q5new$Delay)
+q5new$Year <- factor(q5new$Year)
+q5new$Month <- factor(q5new$Month)
+q5new$DayofMonth <- factor(q5new$DayofMonth)
+q5new$TailNum <- factor(q5new$TailNum)
+
+task <- TaskClassif$new('q5new', backend=q5new, target = 'Delay')
+task$select(c('Year', 'Month', 'DayofMonth','DepTime'))
+measure <- msr('classif.ce')
+task
+
+fencoder <- po("encode", method = "treatment",
+               affect_columns = selector_type("factor"))
+
+tuner <- tnr('grid_search')
+terminator <- trm('evals', n_evals = 20)
+
+learner_lr <- lrn("classif.log_reg")
+gc_lr <- po('imputemean') %>>%
+  po(learner_lr)
+glrn_lr <- GraphLearner$new(gc_lr)
+
+
+glrn_lr$train(task, row_ids = train_set)
+glrn_lr$predict(task, row_ids = test_set)$score()
+
+#==== penalised logistic regression=====
+learner_plr <- lrn('classif.glmnet') 
+gc_plr <- po('scale') %>>% 
+  fencoder %>>%
+  po('imputemean') %>>%
+  po(learner_plr)
+glrn_plr <- GraphLearner$new(gc_plr)
+tune_lambda <- ParamSet$new (list(
+  ParamDbl$new('classif.glmnet.lambda', lower = 0.001, upper = 2)
+))
+
+at_plr <- AutoTuner$new(
+  learner = glrn_plr,
+  resampling = rsmp('cv', folds = 3),
+  measure = measure,
+  search_space = tune_lambda,
+  terminator = terminator,
+  tuner = tuner
+)
+at_plr$train(task, row_ids = train_set)
+at_plr$predict(task, row_ids = test_set)$score()
+
+#====xgboost====
+library(xgboost)
+
+learner_gb <- lrn("classif.xgboost")
+gc_gb <- po('imputemean') %>>%
+  fencoder %>>% 
+  po(learner_gb)
+glrn_gb <- GraphLearner$new(gc_gb)
+
+glrn_gb$train(task, row_ids = train_set)
+glrn_gb$predict(task, row_ids = test_set)$score()
+
+#=====classification tree
+learner_tree <- lrn("classif.rpart")
+
+gc_tree <- po('imputemean') %>>%
+  po(learner_tree)
+glrn_tree <- GraphLearner$new(gc_tree)
+
+glrn_tree$train(task, row_ids = train_set)
+glrn_tree$predict(task, row_ids = test_set)$score() 
+
+
+#random forest
+library(ranger)
+learner_rf <- lrn('classif.ranger') 
+learner_rf$param_set$values <- list(min.node.size = 4)
+gc_rf <- po('scale') %>>%
+  po('imputemean') %>>%
+  po(learner_rf)
+glrn_rf <- GraphLearner$new(gc_rf)
+tune_ntrees <- ParamSet$new (list(
+  ParamInt$new('classif.ranger.num.trees', lower = 50, upper = 600)
+))
+at_rf <- AutoTuner$new(
+  learner = glrn_rf,
+  resampling = rsmp('cv', folds = 3),
+  measure = measure,
+  search_space = tune_ntrees,
+  terminator = terminator,
+  tuner = tuner
+)
+at_rf$train(task, row_ids = train_set)
+at_rf$predict(task, row_ids = test_set)$score()
+
+#====support vector machines
+library(e1071)
+learner_svm <- lrn("classif.svm")
+
+gc_svm <- po('imputemean') %>>% 
+  fencoder %>>% 
+  po(learner_svm)
+glrn_svm <- GraphLearner$new(gc_svm)
+
+glrn_svm$train(task, row_ids = train_set)
+glrn_svm$predict(task, row_ids = test_set)$score() 
+
+#list of learners
+lrn_list <- list(
+  glrn_lr,
+  glrn_gb,
+  at_plr,
+  glrn_tree,
+  at_rf,
+  glrn_svm
+)
+
+# set the benchmark design and run the comparisons
+bm_design <- benchmark_grid(task = task, resamplings = rsmp('cv', folds = 3), learners = lrn_list)
+bmr <- benchmark(bm_design, store_models = TRUE)
+
+#plotting of the result of different learner
+library(mlr3viz)
+autoplot(bmr) + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+bmr$aggregate(measure)
